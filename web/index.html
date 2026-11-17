@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>限速采集调度台</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb; --surface-2: #f3f3f0; --border: #dddcd6;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #8a887f;
+  --accent: #3987e5; --accent-soft: #cde2fb;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --surface-2: #232322; --border: #3a3a37;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8a887f;
+    --accent: #3987e5; --accent-soft: #24405e;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface-2); color: var(--text-primary);
+       font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+header { padding: 12px 20px; background: var(--surface-1); border-bottom: 1px solid var(--border);
+         display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0; }
+header .sub { color: var(--text-secondary); font-size: 12px; }
+main { padding: 16px 20px; display: grid; gap: 14px; grid-template-columns: 1fr 1fr;
+       max-width: 1500px; margin: 0 auto; }
+.panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+         padding: 12px 14px; min-width: 0; }
+.panel.wide { grid-column: 1 / -1; }
+.panel h2 { font-size: 13px; margin: 0 0 10px; color: var(--text-secondary);
+            text-transform: uppercase; letter-spacing: .04em; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border);
+         vertical-align: top; }
+th { color: var(--text-secondary); font-weight: 600; white-space: nowrap; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.tiles { display: flex; gap: 10px; flex-wrap: wrap; }
+.tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+        padding: 8px 12px; min-width: 130px; }
+.tile .k { font-size: 11px; color: var(--text-secondary); }
+.tile .v { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.good { background: var(--good); } .dot.bad { background: var(--critical); }
+.tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
+       border: 1px solid var(--border); color: var(--text-secondary); }
+.tag.ok { color: var(--good); border-color: var(--good); }
+.tag.warn { color: var(--serious); border-color: var(--serious); }
+.tag.crit { color: var(--critical); border-color: var(--critical); }
+.bar { width: 130px; height: 8px; background: var(--surface-2); border: 1px solid var(--border);
+       border-radius: 4px; overflow: hidden; display: inline-block; vertical-align: middle; }
+.bar > i { display: block; height: 100%; background: var(--accent);
+           border-radius: 0 4px 4px 0; transition: width .4s; }
+.bar.done > i { background: var(--good); }
+.bar-label { font-size: 11px; color: var(--text-secondary); margin-left: 6px; }
+button, select, input { font: inherit; font-size: 12px; padding: 3px 8px;
+  background: var(--surface-1); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 5px; }
+button { cursor: pointer; } button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+form.inline { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.log { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 11.5px;
+       max-height: 260px; overflow-y: auto; }
+.log div { padding: 2px 4px; border-bottom: 1px solid var(--border); white-space: pre-wrap; }
+.log .t { color: var(--text-muted); margin-right: 6px; }
+.reason-fair { color: var(--accent); } .reason-gap { color: var(--serious); }
+.ev-warn { color: var(--serious); } .ev-crit { color: var(--critical); }
+.muted { color: var(--text-secondary); font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.kv { font-size: 12px; } .kv b { font-weight: 600; }
+.scroll { max-height: 300px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>限速采集调度台</h1>
+  <span class="sub">三层限速（接口/账号/出口）· 许可调度 · 围栏转移 · 入库完整性</span>
+  <span id="clock" class="sub"></span>
+</header>
+<main>
+  <div class="panel wide">
+    <h2>系统状态</h2>
+    <div class="tiles" id="tiles"></div>
+  </div>
+
+  <div class="panel wide">
+    <h2>任务（进度 = 入库端实收/应收，非静态示意）</h2>
+    <table id="tasks">
+      <thead><tr>
+        <th>ID</th><th>范围</th><th>部分</th><th>优先级</th><th>归属</th><th>epoch</th>
+        <th>状态</th><th>进度（实收/应收）</th><th>缺失</th><th>重复/围栏/坏校验</th><th>操作</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <form class="inline" id="createTask" style="margin-top:8px">
+      <b>新建任务</b>
+      <input name="from" type="number" placeholder="from" min="1" max="600" required style="width:70px">
+      <input name="to" type="number" placeholder="to" min="1" max="600" required style="width:70px">
+      <label><input name="with_images" type="checkbox" checked> 含图片</label>
+      <select name="priority"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select>
+      <select name="assigned" id="assignSel"></select>
+      <button class="primary">创建</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>调度策略（可在线调整）</h2>
+    <form class="inline" id="policyForm">
+      <label>缺口加权 gap_bonus <input name="gap_bonus" type="number" step="0.1" style="width:60px"></label>
+      <label>视野 horizon_s <input name="horizon_sec" type="number" step="0.5" style="width:60px"></label>
+      <label>许可TTL_s <input name="permit_ttl_sec" type="number" step="0.5" style="width:60px"></label>
+      <label>公平窗口_s <input name="window_sec" type="number" step="1" style="width:60px"></label>
+      <button class="primary">保存</button>
+    </form>
+    <p class="muted">许可按 <b>三层分别建模</b>：not_before = max(接口层, 账号层, 出口层)，不是统一睡眠。
+    得分 = 优先级×(1+gap_bonus×缺口率)/(1+窗口内已获许可数)。
+    缺口加分反超更高优先级时记 <span class="reason-gap">gap-fill</span>，否则记
+    <span class="reason-fair">fair-share</span>。</p>
+    <h2>许可决策（含理由）</h2>
+    <div class="log" id="decisions"></div>
+  </div>
+
+  <div class="panel">
+    <h2>来源限速（实际值，可改 = 模拟来源临时改限速）</h2>
+    <div id="srcLimits"></div>
+    <p class="muted" id="assumeNote"></p>
+    <h2>对账审计</h2>
+    <div class="kv" id="audit"></div>
+  </div>
+
+  <div class="panel wide">
+    <h2>实际请求记录（来源端地面真值）</h2>
+    <div class="scroll">
+    <table id="reqs">
+      <thead><tr><th>#</th><th>时间</th><th>出口IP</th><th>账号</th><th>接口</th><th>状态</th>
+        <th>拒绝层</th><th>接口等ms</th><th>账号等ms</th><th>出口等ms</th><th>许可</th><th>任务/epoch</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="panel wide">
+    <h2>事件</h2>
+    <div class="log" id="events"></div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const fmtT = ts => new Date(ts*1000).toLocaleTimeString('zh-CN', {hour12:false});
+async function api(path, method, body) {
+  const opt = {method: method || 'GET'};
+  if (body !== undefined) { opt.body = JSON.stringify(body);
+    opt.headers = {'Content-Type': 'application/json'}; }
+  const r = await fetch(path, opt);
+  return {status: r.status, body: await r.json()};
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+let reqCursor = 0, collectors = [];
+
+async function refreshOverview() {
+  let d;
+  try { d = (await api('/ui/api/overview')).body; }
+  catch { $('#tiles').innerHTML = '<span class="status"><i class="dot bad"></i>调度器不可达</span>'; return; }
+  $('#clock').textContent = '时钟 ' + fmtT(d.now);
+  collectors = d.collectors;
+  const rec = d.reconcile;
+  const tiles = [
+    ['来源连通', rec.source_ok, rec.source_ok ? '正常' : '不可达'],
+    ['入库端连通', rec.ingestor_ok, rec.ingestor_ok ? '正常' : '不可达'],
+    ['限速核对', true, rec.limits_checked_ts ? fmtT(rec.limits_checked_ts) : '—'],
+    ['请求对账游标', true, '#' + rec.req_cursor],
+  ];
+  for (const c of d.collectors)
+    tiles.push(['采集进程 ' + c.id + '（' + c.egress + '）', c.online, c.online ? '在线' : '离线']);
+  $('#tiles').innerHTML = tiles.map(([k, ok, v]) =>
+    `<div class="tile"><div class="k">${esc(k)}</div>
+     <div class="v"><span class="status"><i class="dot ${ok?'good':'bad'}"></i>${esc(String(v))}</span></div></div>`).join('');
+
+  // 任务表
+  const sel = $('#assignSel');
+  sel.innerHTML = collectors.map(c => `<option>${esc(c.id)}</option>`).join('');
+  const tb = $('#tasks tbody');
+  tb.innerHTML = d.tasks.map(t => {
+    const c = t.completeness;
+    const bars = c ? Object.entries(c.per_part).map(([part, p]) => {
+      const pct = p.expected ? Math.round(100*p.received/p.expected) : 0;
+      const done = p.expected > 0 && p.received === p.expected;
+      return `<div><span class="muted">${part}</span><br>
+        <span class="bar ${done?'done':''}"><i style="width:${pct}%"></i></span>
+        <span class="bar-label">${p.received}/${p.expected}</span></div>`;
+    }).join('') : '<span class="muted">—</span>';
+    const opts = collectors.map(x =>
+      `<option ${x.id===t.assigned?'selected':''}>${esc(x.id)}</option>`).join('');
+    const statusTag = t.status === 'done' ? '<span class="tag ok">完成</span>'
+      : t.status === 'paused' ? '<span class="tag warn">暂停</span>'
+      : '<span class="tag">进行中</span>';
+    return `<tr>
+      <td class="num">${t.id}</td>
+      <td>${t.spec.from}–${t.spec.to}</td>
+      <td class="muted">${t.spec.parts.join('+')}</td>
+      <td><select onchange="setPriority(${t.id}, this.value)">
+        ${[1,2,3,4,5].map(p=>`<option ${p===t.priority?'selected':''}>${p}</option>`).join('')}
+      </select></td>
+      <td><select id="asg-${t.id}">${opts}</select></td>
+      <td class="num">${t.epoch}</td>
+      <td>${statusTag}${c && !c.discovery_done ? ' <span class="tag warn">发现中</span>' : ''}</td>
+      <td>${bars}</td>
+      <td class="num">${c ? c.missing_total : '—'}</td>
+      <td class="num muted">${c ? c.duplicates + ' / ' + c.fenced_submissions + ' / ' + c.bad_checksum : '—'}</td>
+      <td>
+        <button onclick="transfer(${t.id})">转移</button>
+        ${t.status === 'paused'
+          ? `<button onclick="taskAction(${t.id},'resume')">恢复</button>`
+          : `<button onclick="taskAction(${t.id},'pause')">暂停</button>`}
+      </td></tr>`;
+  }).join('');
+
+  // 决策日志
+  $('#decisions').innerHTML = d.decisions.map(x => {
+    const expl = (x.candidates && x.candidates.explain) || '';
+    const cls = x.reason === 'gap-fill' ? 'reason-gap' : 'reason-fair';
+    return `<div><span class="t">${fmtT(x.ts)}</span><b class="${cls}">${esc(x.reason)}</b> ${esc(expl)}</div>`;
+  }).join('') || '<div class="muted">暂无</div>';
+
+  // 事件
+  $('#events').innerHTML = d.events.map(e => {
+    const cls = /stale|untracked|fenced/.test(e.type) ? 'ev-crit'
+      : /lost|offline|changed|unreported/.test(e.type) ? 'ev-warn' : '';
+    return `<div class="${cls}"><span class="t">${fmtT(e.ts)}</span><b>${esc(e.type)}</b> ${esc(e.message)}</div>`;
+  }).join('');
+
+  // 策略表单回填（仅未聚焦时）
+  const pf = $('#policyForm');
+  if (!pf.contains(document.activeElement) || document.activeElement.tagName === 'FORM')
+    for (const [k, v] of Object.entries(d.policy))
+      if (pf.elements[k]) pf.elements[k].value = v;
+}
+
+async function refreshSource() {
+  try {
+    const d = (await api('/ui/api/source/limits')).body;
+    const L = d.limits;
+    const rows = [];
+    for (const [name, cfg] of Object.entries(L.interfaces))
+      rows.push([`接口 ${name}`, cfg.cap, cfg.rate, `interfaces.${name}`]);
+    rows.push(['账号（每个）', L.account.cap, L.account.rate, 'account']);
+    rows.push(['出口（每个）', L.egress.cap, L.egress.rate, 'egress']);
+    $('#srcLimits').innerHTML = '<table><thead><tr><th>层</th><th>容量</th><th>速率/秒</th><th>实时等待</th><th></th></tr></thead><tbody>' +
+      rows.map(([label, cap, rate, key]) => {
+        const bkey = key.startsWith('interfaces') ? 'interface:' + key.split('.')[1] : null;
+        const waits = Object.entries(d.buckets || {})
+          .filter(([k]) => key === 'account' ? k.startsWith('account:')
+                        : key === 'egress' ? k.startsWith('egress:')
+                        : k === bkey)
+          .map(([, v]) => v.wait_ms);
+        const w = waits.length ? Math.max(...waits) : 0;
+        return `<tr><td>${esc(label)}</td>
+          <td><input id="cap-${key}" type="number" step="0.5" value="${cap}" style="width:60px"></td>
+          <td><input id="rate-${key}" type="number" step="0.1" value="${rate}" style="width:60px"></td>
+          <td class="num">${w} ms</td>
+          <td><button onclick="setLimit('${key}')">应用</button></td></tr>`;
+      }).join('') + '</tbody></table>';
+  } catch { $('#srcLimits').innerHTML = '<span class="muted">来源不可达</span>'; }
+  try {
+    const a = (await api('/ui/api/audit')).body;
+    const byStatus = a.permits_by_status.map(s => `${s.status}:${s.n}`).join(' ');
+    $('#audit').innerHTML =
+      `许可总数 <b>${a.permits_total}</b>（${esc(byStatus)}）<br>` +
+      `无许可请求 <b>${a.untracked_requests}</b> · 过期许可被用 <b>${a.stale_permit_used}</b> · ` +
+      `成功未回报 <b>${a.used_unreported}</b> · 围栏回报 <b>${a.fenced_reports}</b>`;
+  } catch {}
+}
+
+async function refreshRequests() {
+  try {
+    const d = (await api('/ui/api/source/requests?since_id=' + reqCursor + '&limit=100')).body;
+    if (d.rows.length) {
+      reqCursor = d.max_id;
+      const tb = $('#reqs tbody');
+      for (const r of d.rows) {
+        const tr = document.createElement('tr');
+        const st = r.status === 200 ? '<span class="tag ok">200</span>'
+          : r.status === 429 ? '<span class="tag warn">429</span>'
+          : `<span class="tag crit">${r.status}</span>`;
+        tr.innerHTML = `<td class="num">${r.id}</td><td>${fmtT(r.ts)}</td>
+          <td>${esc(r.ip)}</td><td>${esc(r.account)}</td><td>${esc(r.interface)}</td>
+          <td>${st}</td><td class="muted">${esc(r.denied_by || '')}</td>
+          <td class="num">${r.wait_if_ms}</td><td class="num">${r.wait_acct_ms}</td>
+          <td class="num">${r.wait_eg_ms}</td>
+          <td class="num muted">${esc(r.permit_id || '—')}</td>
+          <td class="muted">${esc(r.task_id || '')}${r.epoch ? ' / e' + esc(r.epoch) : ''}</td>`;
+        tb.prepend(tr);
+      }
+      while (tb.rows.length > 120) tb.deleteRow(-1);
+    }
+  } catch {}
+}
+
+async function transfer(tid) {
+  const target = document.getElementById('asg-' + tid).value;
+  const r = await api(`/ui/api/tasks/${tid}/transfer`, 'POST', {target});
+  if (r.status !== 200) alert('转移失败: ' + JSON.stringify(r.body));
+  refreshOverview();
+}
+async function taskAction(tid, action) { await api(`/ui/api/tasks/${tid}/${action}`, 'POST'); refreshOverview(); }
+async function setPriority(tid, priority) {
+  await api(`/ui/api/tasks/${tid}/priority`, 'POST', {priority: +priority}); refreshOverview();
+}
+async function setLimit(key) {
+  const cap = +document.getElementById('cap-' + key).value;
+  const rate = +document.getElementById('rate-' + key).value;
+  const body = {};
+  if (key.startsWith('interfaces.')) body.interfaces = {[key.split('.')[1]]: {cap, rate}};
+  else body[key] = {cap, rate};
+  const r = await api('/ui/api/source/limits', 'PUT', body);
+  if (r.status !== 200) alert('修改失败');
+  refreshSource();
+}
+$('#createTask').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = e.target;
+  const r = await api('/ui/api/tasks', 'POST', {
+    from: +f.from.value, to: +f.to.value, with_images: f.with_images.checked,
+    priority: +f.priority.value, assigned: f.assigned.value});
+  if (r.status !== 200) alert('创建失败: ' + JSON.stringify(r.body));
+  f.reset(); refreshOverview();
+});
+$('#policyForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = e.target, body = {};
+  for (const k of ['gap_bonus','horizon_sec','permit_ttl_sec','window_sec'])
+    body[k] = +f[k].value;
+  await api('/ui/api/policy', 'PUT', body);
+  refreshOverview();
+});
+
+refreshOverview(); refreshSource(); refreshRequests();
+setInterval(refreshOverview, 2000);
+setInterval(refreshSource, 4000);
+setInterval(refreshRequests, 2000);
+</script>
+</body>
+</html>
